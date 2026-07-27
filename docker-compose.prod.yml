@@ -1,0 +1,24 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: skuld-api-prod
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - skuld_cache_data:/app/temp/cache_maquina_tempo 
+      - skuld_models:/app/app/ml/models                
+    command: ["uvicorn", "app.api.routes:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+    networks:
+      - web
+      - default 
+
+volumes:
+  skuld_cache_data:
+  skuld_models:
+
+networks:
+  web:
+    external: true

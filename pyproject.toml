@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "skuld-api"
+version = "0.1.0"
+description = "Microserviço preditivo para alocação de salas da USP (ARGUS ML)"
+authors = ["Ayrton Douglas <ayrtondouglas@usp.br>"]
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.14"
+
+fastapi = "^0.110.0"
+uvicorn = "^0.29.0"
+pydantic = "^2.7.0"
+
+pandas = "^3.0.5"
+numpy = "2.3.5"
+scipy = "^1.15.0"    
+scikit-learn = "1.9.0"
+lightgbm = "4.7.0"
+joblib = "1.5.3"
+optuna = "4.9.0"
+python-dotenv = "1.2.2"
+
+replicado-python = { git = "https://github.com/ime-usp-br/replicado-python.git", rev = "fd92fbe6935b58fc854e12d8b45a16bb832a4301" }
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+ruff = "^0.3.0"
+
+shap = "0.52.0"
+statsmodels = "0.14.6"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
