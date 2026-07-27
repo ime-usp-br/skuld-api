@@ -5,8 +5,6 @@ services:
       dockerfile: Dockerfile
     container_name: skuld-api-prod
     restart: unless-stopped
-    env_file:
-      - .env
     volumes:
       - skuld_cache_data:/app/temp/cache_maquina_tempo 
       - skuld_models:/app/app/ml/models                
