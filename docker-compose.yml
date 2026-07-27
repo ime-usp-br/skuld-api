@@ -10,8 +10,8 @@ services:
       - .env
     volumes:
       - .:/app  # Hot-reload: o código da sua máquina reflete no container
-      - skuld_cache_data:/app/temp/cache_maquina_tempo # Volume persistente do Histórico
-      - skuld_models:/app/app/ml/models                # Volume persistente dos Modelos
+      - skuld_cache_data:/app/tmp/cache_maquina_tempo # Volume persistente do Histórico (Máquina do Tempo)
+      - skuld_models:/app/app/ml/models               # Volume persistente dos Modelos
     command: ["uvicorn", "app.api.routes:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 volumes:

@@ -217,4 +217,13 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-tmp
+tmp/
+
+# Dados sensíveis / caches do replicado (volume Docker skuld_cache_data e
+# CSV mestre). Nunca versionar — sobem apenas via volume/`.env`.
+temp/
+
+# Artefatos de ML serializados pela rota /train (volume Docker skuld_models).
+# São pesos treinados, regeneráveis — nunca commitar.
+app/ml/models/*.pkl
+*.joblib
