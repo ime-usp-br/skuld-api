@@ -1,0 +1,34 @@
+{
+  "unidade": "IME-USP",
+  "regras_negocio": {
+    "corte_sweet_spot": 80,
+    "buffer_ingressantes": 1.23
+  },
+  "hyperparametros_calouros": {
+    "alpha": 0.9799,
+    "n_estimators": 4703,
+    "learning_rate": 0.2063,
+    "num_leaves": 250,
+    "max_depth": 11,
+    "min_child_samples": 48,
+    "colsample_bytree": 0.4348,
+    "reg_alpha": 5.3797,
+    "reg_lambda": 14.9998,
+    "subsample": 0.9006,
+    "objective": "quantile"
+  },
+  "hyperparametros_veteranos": {
+    "boosting_type": "gbdt",
+    "alpha": 0.9799,
+    "n_estimators": 142,
+    "learning_rate": 0.0111,
+    "num_leaves": 56,
+    "max_depth": 11,
+    "min_child_samples": 44,
+    "colsample_bytree": 0.4514,
+    "reg_alpha": 0.0524,
+    "reg_lambda": 0.0001,
+    "subsample": 0.8227,
+    "objective": "quantile"
+  }
+}

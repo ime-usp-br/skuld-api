@@ -22,7 +22,7 @@ joblib = "1.5.3"
 optuna = "4.9.0"
 python-dotenv = "1.2.2"
 
-replicado-python = { git = "https://github.com/ime-usp-br/replicado-python.git", rev = "3da52ef050c45ffac3db82250a60cb016523d18d" }
+replicado-python = { git = "https://github.com/ime-usp-br/replicado-python.git", rev = "5c26c2983060a402ecef5a97d3011112c546fa8f" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

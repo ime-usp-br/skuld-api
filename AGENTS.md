@@ -18,6 +18,7 @@ A **Skuld API** é um microserviço preditivo (Machine Learning) desenvolvido pa
 - **Machine Learning:** LightGBM, Pandas, Scikit-Learn, Optuna, Joblib.
 - **Gerenciamento:** Poetry (Dependências) e Docker (Volumes persitentes para os Caches e Modelos).
 - **Qualidade:** Ruff (Linting e Auto-formatting). Só aplique o Ruff nos arquivos modificados na sua task para não gerar diffs gigantes.
+- **⚠️ Ambiente de Execução (OBRIGATÓRIO):** O projeto roda **exclusivamente em Docker** (ver `docker-compose.yml` / `Dockerfile`). NÃO instale dependências (`lightgbm`, `pandas`, `replicado-python`, etc.) nem crie `venv` no host. Para qualquer teste ou execução de código (lint, typecheck, treino, inferência), entre no container em pé (`docker exec -it skuld-api-dev bash`) ou suba-o (`docker compose up -d`). Instalar no host quebra a paridade de versões e gera worktrees/envs poluídos. O Ruff também roda dentro do container; no host seu `ruff` local provavelmente é de versão diferente do pin (`^0.3.0`) e pode disparar regras inexistentes (ex: `DTZ005`/`BLE001`).
 
 ## 🚦 3. Fluxo de Dados e Endpoints (Regras de Arquitetura)
 A separação de responsabilidades neste projeto é muito estrita:

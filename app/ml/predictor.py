@@ -1,4 +1,4 @@
-"""Pipeline de inferência ARGUS ML v2.1 (tradução da Célula 3 do notebook).
+"""Pipeline de inferência ARGUS ML v2.2 (agnóstico por unidade USP).
 
 Regras de Ouro (ver AGENTS.md):
 - Nenhum modelo é carregado em escopo global. A cada chamada de
@@ -8,10 +8,14 @@ Regras de Ouro (ver AGENTS.md):
 - O dataset vem do ``replicado.dataset_alocacao.montar_dataset`` (agnóstico
   à unidade USP; escopo via ``DatasetConfig.from_env``).
 - ``capacidade_sugerida`` é sempre ``np.ceil`` -> ``int`` (contrato Pydantic).
+- A unidade (``codundclg``) define o subdiretório de modelos
+  (``MODELS_DIR / {codundclg}``) e o arquivo de regras de negócio
+  (``app/ml/configs/{codundclg}.json``). Nada de hardcoded do IME.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -22,21 +26,19 @@ from replicado.dataset_alocacao import DatasetConfig, montar_dataset
 
 # Diretório base dos artefatos serializados pela rota /train. No container
 # Docker o volume persistente é /app; localmente, espelha app/ml/models.
-_DIRETORIO_MODELOS = Path(os.getenv("SKULD_DIR_MODELOS", Path(__file__).parent / "models"))
+# Dentro dele há um subdiretório por unidade: ``{MODELS_DIR}/{codundclg}/``.
+_DIRETORIO_MODELOS = Path(os.getenv("MODELS_DIR", Path(__file__).parent / "models"))
+
+# Diretório dos arquivos JSON de regras de negócio por unidade.
+_DIRETORIO_CONFIGS = Path(__file__).parent / "configs"
 
 NOME_MODELO_CALOUROS = "modelo_calouros.pkl"
 NOME_MODELO_VETERANOS = "modelo_veteranos.pkl"
 
-# Parâmetros de negócio (Célula 3). Defaults do notebook, overridables por env
-# para manter a Skuld agnóstica à unidade (regra de ouro do AGENTS.md).
-BUFFER_CALOUROS = float(os.getenv("SKULD_BUFFER_CALOUROS", "1.23"))
-CORTE_HIBRIDO = int(os.getenv("SKULD_CORTE_HIBRIDO", "80"))
-
 # O ``replicado.montar_dataset`` aceita ``saida`` e ``cache_dir`` no
 # ``DatasetConfig``, então centralizamos ambos em ``tmp/`` (gitignored): o CSV
 # mestre (``saida``) e os pickles da "Máquina do Tempo" (``cache_dir``). Em
-# produção, ambos vêm do bind mount ``.:/app`` → host ``tmp/`` (caches
-# extraídos uma vez por ``/cache/initialize`` e servidos em DevOps); o volume
+# produção, ambos vêm do bind mount ``.:/app`` → host ``tmp/``; o volume
 # nomeado ``skuld_cache_data`` (se montado em ``temp/...``) é ignorado por
 # padrão para evitar criar ``temp/`` no host. Override via env se necessário.
 _DIRETORIO_SAIDA = Path(os.getenv("SKULD_DIR_SAIDA", "tmp/dataset_alocacao.csv"))
@@ -64,18 +66,44 @@ def _features_do_modelo(modelo) -> list[str]:
     return [f"f{i}" for i in range(int(n))]
 
 
-def _carregar_modelos() -> tuple[object, list[str], object, list[str]]:
-    """Lê os dois ``.pkl`` do disco a cada chamada (Regra de Ouro do AGENTS.md).
+def _carregar_regras_negocio(codundclg: int) -> tuple[int, float]:
+    """Lê ``app/ml/configs/{codundclg}.json`` e devolve o par
+    ``(corte_sweet_spot, buffer_ingressantes)``.
+
+    Mantém a Skuld agnóstica à unidade: as regras de pós-processamento (Corte
+    Híbrido + Blindagem de Calouros) vivem num arquivo de configuração por
+    unidade, não hardcoded em constantes globais.
+    """
+    caminho = _DIRETORIO_CONFIGS / f"{codundclg}.json"
+    if not caminho.exists():
+        raise FileNotFoundError(
+            f"Arquivo de regras de negócio não encontrado: {caminho}. "
+            f"Crie app/ml/configs/{codundclg}.json com a chave "
+            f"'regras_negocio' (corte_sweet_spot, buffer_ingressantes)."
+        )
+    with caminho.open(encoding="utf-8") as f:
+        cfg = json.load(f)
+    regras = cfg["regras_negocio"]
+    return int(regras["corte_sweet_spot"]), float(regras["buffer_ingressantes"])
+
+
+def _carregar_modelos(
+    codundclg: int,
+) -> tuple[object, list[str], object, list[str]]:
+    """Lê os dois ``.pkl`` do subdiretório da unidade a cada chamada (Regra de
+    Ouro do AGENTS.md).
 
     Levanta FileNotFoundError com mensagem útil se a rota /train ainda não
-    populou os artefatos.
+    populou os artefatos daquela unidade.
     """
-    pcal = _DIRETORIO_MODELOS / NOME_MODELO_CALOUROS
-    pvet = _DIRETORIO_MODELOS / NOME_MODELO_VETERANOS
+    base = _DIRETORIO_MODELOS / str(codundclg)
+    pcal = base / NOME_MODELO_CALOUROS
+    pvet = base / NOME_MODELO_VETERANOS
     for p in (pcal, pvet):
         if not p.exists():
             raise FileNotFoundError(
-                f"Modelo não encontrado: {p}. Rode a rota /train antes da inferência."
+                f"Modelo não encontrado: {p}. Rode a rota /train para a "
+                f"unidade {codundclg} antes da inferência."
             )
 
     mod_cal = joblib.load(pcal)
@@ -120,17 +148,19 @@ def _inferir_capacidade(
     feat_cal: list[str],
     mod_vet,
     feat_vet: list[str],
+    corte_sweet_spot: int,
+    buffer_ingressantes: float,
 ) -> pd.DataFrame:
-    """Pipeline puro de inferência: devolve a demanda teto contínua/arredondada.
+    """Pipeline puro de inferência: devolve a demanda teto arredondada.
 
-    Matemática transcrita da Célula 3:
+    Matemática transcrita da Célula 3 (regras carregadas do JSON da unidade):
       1. ``mask_cal = flag_turma_ingressantes == 1``.
       2. ``delta_pred`` (0 por default) é a predição do modelo quantílico,
          separada por população (calouros / veteranos).
       3. ``cap_ml_pura = estmtr + delta_pred``.
-      4. Corte Híbrido: se ``estmtr >= CORTE_HIBRIDO`` impede downgrade abaixo
-         do ``estmtr`` -> ``max(estmtr, cap_ml_pura)``.
-      5. Escudo de Calouros: ``cap_final[mask_cal] *= BUFFER_CALOUROS``.
+      4. Corte Híbrido: se ``estmtr >= corte_sweet_spot`` impede downgrade
+         abaixo do ``estmtr`` -> ``max(estmtr, cap_ml_pura)``.
+      5. Escudo de Calouros: ``cap_final[mask_cal] *= buffer_ingressantes``.
       6. ``capacidade_sugerida = np.ceil(cap_final)`` (cadeiras inteiras).
     """
     df_out = df_target.copy()
@@ -148,21 +178,23 @@ def _inferir_capacidade(
     df_vet = df_out.loc[~mask_cal].copy()
     if len(df_vet) > 0:
         _aplicar_categoricas(df_vet, feat_vet)
-        df_out.loc[~mask_cal, "delta_pred"] = mod_vet.predict(df_vet[feat_vet]).astype(float)
+        df_out.loc[~mask_cal, "delta_pred"] = mod_vet.predict(df_vet[feat_vet]).astype(
+            float
+        )
 
     # 2. Capacidade pura (estimativa institucional + correção predita)
     df_out["cap_ml_pura"] = df_out["estmtr"] + df_out["delta_pred"]
 
-    # 3. Corte Híbrido (proibição de downgrade em auditórios >= CORTE_HIBRIDO)
+    # 3. Corte Híbrido (proibição de downgrade em auditórios grandes)
     df_out["cap_hibrida"] = np.where(
-        df_out["estmtr"] >= CORTE_HIBRIDO,
+        df_out["estmtr"] >= corte_sweet_spot,
         np.maximum(df_out["estmtr"], df_out["cap_ml_pura"]),
         df_out["cap_ml_pura"],
     )
 
     # 4. Escudo isolado de calouros (multiplicador estrito)
     cap_final = df_out["cap_hibrida"].copy()
-    cap_final[mask_cal] = cap_final[mask_cal] * BUFFER_CALOUROS
+    cap_final[mask_cal] = cap_final[mask_cal] * buffer_ingressantes
 
     # 5. Arredondamento contínuo -> inteiro (contrato Pydantic: nunca float)
     df_out["capacidade_sugerida"] = np.ceil(cap_final)
@@ -171,16 +203,33 @@ def _inferir_capacidade(
 
 def gerar_predicoes(ano_sem: int) -> list[dict]:
     """Monta o dataset (cache, sem reextrair), filtra o semestre alvo e
-    aplica o pipeline quantílico ARGUS v2.1.
+    aplica o pipeline quantílico ARGUS v2.2 da unidade configurada.
 
-    Retorna uma lista de dicionários chaveados pelo schema ``PredicaoTurma``
-    (``coddis``, ``codtur``, ``estmtr``, ``capacidade_sugerida``,
-    ``is_calouros``). ``capacidade_sugerida`` é sempre ``int`` via ``np.ceil``.
+    Fluxo agnóstico:
+      1. ``REPLICADO_CODUNDCLG`` define a unidade.
+      2. Regras de negócio (Corte Híbrido + Blindagem) são lidas de
+         ``app/ml/configs/{codundclg}.json``.
+      3. Modelos são relidos de ``MODELS_DIR / {codundclg}`` via ``joblib.load``
+         a cada chamada (Regra de Ouro do AGENTS.md).
+      4. ``montar_dataset(DatasetConfig.from_env(), forcar_extracao=False)``.
+
+    Retorna uma lista de dicionários validáveis no schema Pydantic
+    ``PredicaoTurma`` (``coddis``, ``codtur``, ``estmtr``,
+    ``capacidade_sugerida``, ``is_calouros``). ``capacidade_sugerida`` é
+    sempre ``int`` via ``np.ceil``.
     """
+    codundclg = int(os.getenv("REPLICADO_CODUNDCLG", "0"))
+    if codundclg == 0:
+        raise ValueError(
+            "REPLICADO_CODUNDCLG não definido no .env — inferência requer a "
+            "unidade para localizar modelos e regras de negócio."
+        )
+
+    corte_sweet_spot, buffer_ingressantes = _carregar_regras_negocio(codundclg)
+    mod_cal, feat_cal, mod_vet, feat_vet = _carregar_modelos(codundclg)
+
     df_full = montar_dataset(
-        DatasetConfig.from_env(
-            saida=_DIRETORIO_SAIDA, cache_dir=_DIRETORIO_CACHE
-        ),
+        DatasetConfig.from_env(saida=_DIRETORIO_SAIDA, cache_dir=_DIRETORIO_CACHE),
         forcar_extracao=False,
     )
     df_target = df_full[df_full["ano_sem"] == ano_sem].copy().reset_index(drop=True)
@@ -190,20 +239,27 @@ def gerar_predicoes(ano_sem: int) -> list[dict]:
             f"Nenhuma turma encontrada para ano_sem={ano_sem} no dataset."
         )
 
-    mod_cal, feat_cal, mod_vet, feat_vet = _carregar_modelos()
+    df_out = _inferir_capacidade(
+        df_target,
+        mod_cal,
+        feat_cal,
+        mod_vet,
+        feat_vet,
+        corte_sweet_spot,
+        buffer_ingressantes,
+    )
 
-    df_out = _inferir_capacidade(df_target, mod_cal, feat_cal, mod_vet, feat_vet)
+    # Validação do contrato Pydantic (falha cedo se o esquema divergir).
+    from app.api.schemas import PredicaoTurma
 
     predicoes: list[dict] = []
     for row in df_out.itertuples(index=False):
-        is_cal = bool(getattr(row, "flag_turma_ingressantes", 0) == 1)
-        predicoes.append(
-            {
-                "coddis": str(row.coddis),
-                "codtur": str(row.codtur),
-                "estmtr": int(row.estmtr),
-                "capacidade_sugerida": int(row.capacidade_sugerida),
-                "is_calouros": is_cal,
-            }
+        item = PredicaoTurma(
+            coddis=str(row.coddis),
+            codtur=str(row.codtur),
+            estmtr=int(row.estmtr),
+            capacidade_sugerida=int(row.capacidade_sugerida),
+            is_calouros=bool(getattr(row, "flag_turma_ingressantes", 0) == 1),
         )
+        predicoes.append(item.model_dump())
     return predicoes

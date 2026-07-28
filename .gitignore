@@ -225,5 +225,6 @@ temp/
 
 # Artefatos de ML serializados pela rota /train (volume Docker skuld_models).
 # São pesos treinados, regeneráveis — nunca commitar.
+app/ml/models/**/*.pkl
 app/ml/models/*.pkl
 *.joblib
