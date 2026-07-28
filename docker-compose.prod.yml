@@ -11,8 +11,32 @@ services:
     command: ["uvicorn", "app.api.routes:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
     networks:
       - web
-    env_file:
-      - .env
+    # O Portainer (deploy via Git) não disponibiliza o .env físico na pasta de
+    # build a tempo, então env_file quebra a stack. Em vez disso, usamos
+    # substituição de variáveis nativa do Compose: os valores são injetados pela
+    # aba "Environment variables" do Portainer (stack-level), e repassados ao
+    # container via `environment:`. Cadastre TODAS as REPLICADO_*/SKULD_*
+    # nessas env vars ao editar a stack no Portainer.
+    environment:
+      - REPLICADO_CODUNDCLG=${REPLICADO_CODUNDCLG:?}
+      - REPLICADO_PREFIXOS_DISC=${REPLICADO_PREFIXOS_DISC:?}
+      - REPLICADO_SUFIXO_MIN=${REPLICADO_SUFIXO_MIN:-40}
+      - REPLICADO_ANO_MIN=${REPLICADO_ANO_MIN:-2010}
+      - REPLICADO_ANO_MAX=${REPLICADO_ANO_MAX:-}
+      - REPLICADO_DIAS_CORTE=${REPLICADO_DIAS_CORTE:-5}
+      - REPLICADO_PISO_VAGAS=${REPLICADO_PISO_VAGAS:-30}
+      - REPLICADO_TOP_CURSOS=${REPLICADO_TOP_CURSOS:-12}
+      - REPLICADO_CURSOS_REP_FLUXO=${REPLICADO_CURSOS_REP_FLUXO:?}
+      - REPLICADO_CURSOS_VAGAS=${REPLICADO_CURSOS_VAGAS:?}
+      - REPLICADO_HOST=${REPLICADO_HOST:?}
+      - REPLICADO_PORT=${REPLICADO_PORT:-1433}
+      - REPLICADO_DATABASE=${REPLICADO_DATABASE:-replicado}
+      - REPLICADO_USERNAME=${REPLICADO_USERNAME:?}
+      - REPLICADO_PASSWORD=${REPLICADO_PASSWORD:?}
+      - REPLICADO_SYBASE=${REPLICADO_SYBASE:-1}
+      - SKULD_DIR_SAIDA=${SKULD_DIR_SAIDA:-/app/tmp/dataset_alocacao.csv}
+      - SKULD_DIR_CACHE=${SKULD_DIR_CACHE:-/app/tmp/cache_maquina_tempo}
+      - MODELS_DIR=${MODELS_DIR:-/app/app/ml/models}
 
 volumes:
   skuld_cache_data:
