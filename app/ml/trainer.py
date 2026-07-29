@@ -11,13 +11,20 @@ Regras de Ouro (ver AGENTS.md):
   unidade (``app/ml/configs/{codundclg}.json``), já fixados em valores SOTA
   encontrados por Optuna offline. O retreino reduz-se a ``lgb.fit()`` sobre
   todo o histórico disponível → segundos, não horas.
+- Leques de features também vêm do JSON (``features_calouros`` /
+  ``features_veteranos``): esse arquivo é o metadado SOTA exportado pela
+  Célula 8 do notebook de pesquisa. Usar os leques explícitos (em vez de
+  derivá-los dinamicamente) garante fidelidade entre a pesquisa e a produção
+  e impede divergência de skema. Uma guarda (``_validar_features``) falha
+  cedo se alguma feature do metadado não existir no dataset montado.
 - Modelos serializados em ``MODELS_DIR / {codundclg} /`` via ``joblib.dump``,
   sobrescrevendo os ``.pkl`` anteriores. O ``/predict`` relê-os a cada
   chamada (Regra de Ouro: nenhum modelo carregado em escopo global).
 - Agnóstico à unidade: ``codundclg`` vem do ``.env``; nada hardcoded.
 
-Tradução da Célula 2 do notebook (separação de features por população) +
-Célula 4-final (fit com hiperparams congelados), sem a Célula 4 (Optuna).
+Tradução da Célula 2 do notebook (separação por população) +
+Célula 4-final (fit com hiperparams congelados), sem a Célula 4 (Optuna),
+consumindo os leques de features do metadado exportado pela Célula 8.
 """
 
 from __future__ import annotations
@@ -48,8 +55,6 @@ NOME_MODELO_CALOUROS = "modelo_calouros.pkl"
 NOME_MODELO_VETERANOS = "modelo_veteranos.pkl"
 
 TARGET_COL = "delta"
-# Identifiers descartados do leque de features (Célula 2 do notebook).
-IDENTIFIERS = ["verdis", "codtur", "ano", "ano_sem", "sufixo", "coddis"]
 
 # Cast categórico (espelha Célula 1 do notebook e predictor._COLS_CAT). Sem
 # ele o LightGBM levanta "categorical_feature do not match" no fit/inferência.
@@ -63,81 +68,89 @@ _COLUNAS_CATEGORICAS = [
 ]
 
 
-def _carregar_hyperparams(codundclg: int) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Lê ``app/ml/configs/{codundclg}.json`` e devolve os dois dicts de
-    hiperparâmetros (calouros, veteranos) com os sufixos fixos adicionados.
+def _carregar_config(
+    codundclg: int,
+) -> tuple[dict[str, Any], dict[str, Any], list[str], list[str]]:
+    """Lê ``app/ml/configs/{codundclg}.json`` e devolve ``(params_cal,
+    params_vet, feat_cal, feat_vet)``.
 
-    Adiciona ``random_state=42``, ``n_jobs=-1`` e ``verbosity=-1`` sobre o
-    que vier do JSON (garante reprodutibilidade e silência o LightGBM, mesmo
-    que o JSON não traga essas chaves). Mantém a Skuld agnóstica à unidade.
+    O arquivo JSON é o próprio metadado SOTA exportado pelo notebook de
+    pesquisa (Célula 8), com chaves normalizadas para o runtime:
+    ``regras_negocio``, ``hyperparametros_*`` e ``features_*``. A unidade é
+    inferida do nome do arquivo (ex.: ``45.json`` -> unidade 45), sem depender
+    de uma chave ``unidade`` interna.
+
+    Os leques ``features_*`` são a **fonte canônica** do que o modelo viu no
+    treino da pesquisa: ao usá-los explicitamente no retreino garantimos
+    fidelidade entre o notebook e a produção, em vez de derivar as features
+    dinamicamente (o que já provocou divergência de skema no passado).
+
+    Adiciona ``random_state=42``, ``n_jobs=-1`` e ``verbosity=-1`` sobre o que
+    vier do JSON (garante reprodutibilidade e silência o LightGBM, mesmo que
+    o JSON não traga essas chaves). Mantém a Skuld agnóstica à unidade.
     """
     caminho = _DIRETORIO_CONFIGS / f"{codundclg}.json"
     if not caminho.exists():
         raise FileNotFoundError(
             f"Arquivo de config não encontrado: {caminho}. Crie "
-            f"app/ml/configs/{codundclg}.json com as chaves "
-            f"'hyperparametros_calouros' e 'hyperparametros_veteranos'."
+            f"app/ml/configs/{codundclg}.json (metadado SOTA exportado pelo "
+            f"notebook) com as chaves 'hyperparametros_calouros', "
+            f"'hyperparametros_veteranos', 'features_calouros' e "
+            f"'features_veteranos'."
         )
     with caminho.open(encoding="utf-8") as f:
         cfg = json.load(f)
+
+    for chave in ("hyperparametros_calouros", "hyperparametros_veteranos",
+                  "features_calouros", "features_veteranos"):
+        if chave not in cfg:
+            raise KeyError(
+                f"Chave '{chave}' ausente em {caminho}. O metadado SOTA "
+                f"precisa declarar hiperparâmetros e leques de features."
+            )
+
     sufixo = {"random_state": 42, "n_jobs": -1, "verbosity": -1}
     params_cal = {**cfg["hyperparametros_calouros"], **sufixo}
     params_vet = {**cfg["hyperparametros_veteranos"], **sufixo}
-    return params_cal, params_vet
+    feat_cal = list(cfg["features_calouros"])
+    feat_vet = list(cfg["features_veteranos"])
+    return params_cal, params_vet, feat_cal, feat_vet
 
 
-def _preparar_features(
-    df: pd.DataFrame,
-) -> tuple[pd.DataFrame, list[str], list[str]]:
-    """Aplica o cast categórico e separa os leques de features por população.
-
-    Tradução literal da Célula 2 do notebook:
-    - Cast ``object -> category`` das colunas categóricas operacionais.
-    - Calouros: features operacionais puras + todos os sensores macro_*
-      (sensibilidade a semestres atípicos pós-crise).
-    - Veteranos: leque completo de features complexas (exclui apenas
-      identificadores, o alvo e o sinal cru de pico ``nummtr_max`` que
-      vaza o alvo).
+def _aplicar_categoricas(df: pd.DataFrame) -> None:
+    """Reaplica o cast ``object -> category`` das colunas categóricas
+    operacionais (espelha a Célula 1 do notebook). Sem este cast o LightGBM
+    levanta "categorical_feature do not match" no ``fit``.
     """
     for col in _COLUNAS_CATEGORICAS:
         if col in df.columns:
             df[col] = df[col].astype("category")
 
-    features_macro = [c for c in df.columns if c.startswith("macro_")]
 
-    features_calouros_base = [
-        c
-        for c in [
-            "coddis",
-            "sufixo",
-            "departamento",
-            "tiptur",
-            "estmtr",
-            "vagas_reais",
-            "flag_vagas_baixas",
-            "creaul",
-            "cretrb",
-            "carga_total_creditos",
-            "qtd_professores",
-            "qtd_turmas_abertas",
-            "flag_noturno",
-            "flag_sexta",
-            "flag_turma_ingressantes",
-        ]
-        if c in df.columns
-    ]
+def _validar_features(
+    df: pd.DataFrame, feat_cal: list[str], feat_vet: list[str]
+) -> None:
+    """Guarda de fidelidade: garante que toda feature declarada no metadado
+    SOTA esteja presente no dataset montado.
 
-    # Operacional + macro, sem duplicatas (preserva a ordem).
-    features_calouros = list(dict.fromkeys(features_calouros_base + features_macro))
-
-    # Veteranos: todas exceto identificadores, alvo e nummtr_max (vazamento).
-    features_veteranos = [
-        c
-        for c in df.columns
-        if c not in IDENTIFIERS and c != TARGET_COL and c != "nummtr_max"
-    ]
-
-    return df, features_calouros, features_veteranos
+    Se faltar alguma coluna, é sinal de divergência de skema entre o metadado
+    (treinado na pesquisa) e o ``replicado.montar_dataset`` atual — tipicamente
+    um bump de pin do ``replicado-python`` que mutou o esquema, ou variável de
+    ambiente (``REPLICADO_PREFIXOS_DISC``) que alterou o leque de cursos.
+    Falhar cedo aqui evita treinar um modelo sobre features parcialmente
+    erradas e, depois, quebrar a inferência (``feature_name_`` não bateria).
+    """
+    colunas = set(df.columns)
+    faltam_cal = [c for c in feat_cal if c not in colunas]
+    faltam_vet = [c for c in feat_vet if c not in colunas]
+    if faltam_cal or faltam_vet:
+        raise ValueError(
+            "Divergência de skema entre o metadado SOTA e o dataset montado. "
+            f"Features de calouros ausentes: {faltam_cal}. "
+            f"Features de veteranos ausentes: {faltam_vet}. "
+            f"Verifique o pin do replicado-python no pyproject.toml e as envs "
+            f"REPLICADO_* em relação ao ambiente usado na pesquisa."
+        )
 
 
 def _salvar_modelo(modelo: object, codundclg: int, nome: str) -> Path:
@@ -176,7 +189,11 @@ def pipeline_treinamento() -> dict[str, Any]:
             "modelos no subdiretório correto."
         )
 
-    params_cal, params_vet = _carregar_hyperparams(codundclg)
+    # 0. Carrega hiperparâmetros + leques de features do metadado SOTA
+    #    exportado pelo notebook (app/ml/configs/{codundclg}.json). Os leques
+    #    ``features_*`` são a fonte canônica do que o modelo viu na pesquisa;
+    #    usá-los explicitamente garante fidelidade notebook <-> produção.
+    params_cal, params_vet, feat_cal, feat_vet = _carregar_config(codundclg)
 
     # 1. Refresh incremental: só os 2 últimos anos quentes de HISTESCOLARGR
     #    são re-extraídos do banco; todo o histórico (2010 → ano) é montado
@@ -192,8 +209,11 @@ def pipeline_treinamento() -> dict[str, Any]:
     if df_full.empty:
         raise ValueError("Dataset de treino vazio após montar_dataset.")
 
-    # 2. Separação de features + cast categórico (Célula 2 do notebook).
-    df_full, feat_cal, feat_vet = _preparar_features(df_full)
+    # 2. Cast categórico (Célula 1 do notebook) + guarda de fidelidade: garante
+    #    que todo o leque do metadado SOTA existe no dataset montado. Falha
+    #    cedo em vez de treinar com features divergentes da pesquisa.
+    _aplicar_categoricas(df_full)
+    _validar_features(df_full, feat_cal, feat_vet)
 
     # 3. Separação por população (Modelo Dual — segregação de risco).
     df_cal = df_full[df_full["flag_turma_ingressantes"] == 1].reset_index(drop=True)
