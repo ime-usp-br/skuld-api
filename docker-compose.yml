@@ -8,12 +8,16 @@ services:
       - "${API_HOST_PORT:-8002}:8000"
     env_file:
       - .env
+    environment:
+      MODELS_DIR_V2: "/app/app/ml/v2/models"
     volumes:
       - .:/app  # Hot-reload: o código da sua máquina reflete no container
       - skuld_cache_data:/app/tmp/cache_maquina_tempo # Volume persistente do Histórico (Máquina do Tempo)
-      - skuld_models:/app/app/ml/models               # Volume persistente dos Modelos
+      - skuld_models:/app/app/ml/models               # Volume persistente dos Modelos v1
+      - skuld_models_v2:/app/app/ml/v2/models         # Volume persistente dos Modelos v2
     command: ["uvicorn", "app.api.routes:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 volumes:
   skuld_cache_data:
   skuld_models:
+  skuld_models_v2:
